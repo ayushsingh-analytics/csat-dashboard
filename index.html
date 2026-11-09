@@ -1,1 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CSAT Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<style>
+  :root{
+    --bg:#0f1420; --card:#171e2e; --line:#26304a; --text:#e8ecf5; --muted:#8b97b5;
+    --green:#2ecc8f; --red:#ff6b6b; --blue:#5b8def; --amber:#f5b942;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:24px}
+  header{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:16px;margin-bottom:20px}
+  h1{font-size:22px;font-weight:700}
+  h1 span{color:var(--muted);font-weight:400;font-size:14px;margin-left:8px}
+  .filters{display:flex;flex-wrap:wrap;gap:10px}
+  .filters label{font-size:11px;color:var(--muted);display:block;margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px}
+  select{background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:14px;min-width:110px}
+  button{background:var(--blue);color:#fff;border:0;border-radius:8px;padding:9px 14px;cursor:pointer;font-size:13px;align-self:flex-end}
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px;margin-bottom:18px}
+  .kpi{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
+  .kpi .t{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .kpi .v{font-size:30px;font-weight:700;margin-top:6px}
+  .kpi.g .v{color:var(--green)} .kpi.r .v{color:var(--red)} .kpi.b .v{color:var(--blue)} .kpi.a .v{color:var(--amber)}
+  .grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}
+  .card h3{font-size:14px;margin-bottom:12px;color:var(--muted);font-weight:600}
+  .c4{grid-column:span 4}.c6{grid-column:span 6}.c8{grid-column:span 8}.c12{grid-column:span 12}
+  .box{position:relative;height:300px}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.5px}
+  #msg{padding:14px;border-radius:10px;background:#3a2230;color:#ffb3b3;margin-bottom:16px;display:none}
+  @media(max-width:900px){.c4,.c6,.c8{grid-column:span 12}}
+</style>
+</head>
+<body>
 
+<header>
+  <h1>CSAT Dashboard <span id="updated"></span></h1>
+  <div class="filters">
+    <div><label>Year</label><select id="fYear"></select></div>
+    <div><label>Month</label><select id="fMonth"></select></div>
+    <div><label>Date</label><select id="fDay"></select></div>
+    <div><label>Outlet</label><select id="fOutlet"></select></div>
+    <button id="reset">Reset</button>
+  </div>
+</header>
+
+<div id="msg"></div>
+
+<section class="kpis">
+  <div class="kpi b"><div class="t">Total Calls</div><div class="v" id="kTotal">-</div></div>
+  <div class="kpi g"><div class="t">Satisfied</div><div class="v" id="kSat">-</div></div>
+  <div class="kpi r"><div class="t">Unsatisfied</div><div class="v" id="kUnsat">-</div></div>
+  <div class="kpi g"><div class="t">Satisfaction % (CSAT)</div><div class="v" id="kCsat">-</div></div>
+  <div class="kpi r"><div class="t">Complaint %</div><div class="v" id="kComp">-</div></div>
+  <div class="kpi a"><div class="t">Total Call Cost</div><div class="v" id="kCost">-</div></div>
+</section>
+
+<section class="grid">
+  <div class="card c4"><h3>Satisfied vs Unsatisfied</h3><div class="box"><canvas id="chDonut"></canvas></div></div>
+  <div class="card c8"><h3>Daily Satisfaction %</h3><div class="box"><canvas id="chTrend"></canvas></div></div>
+  <div class="card c6"><h3>Satisfaction % by Outlet (lowest first)</h3><div class="box"><canvas id="chOutlet"></canvas></div></div>
+  <div class="card c6"><h3>Top Complaint Tags</h3><div class="box"><canvas id="chTags"></canvas></div></div>
+  <div class="card c12"><h3>Agent Performance (Call By)</h3>
+    <table><thead><tr><th>Agent</th><th>Calls</th><th>Satisfied</th><th>Unsatisfied</th><th>Satisfaction %</th></tr></thead><tbody id="agentBody"></tbody></table>
+  </div>
+</section>
+
+<script>
+/* ====== SETTINGS: edit these two lines ====== */
+const CSV_URL = "PASTE_YOUR_PUBLISHED_CSV_LINK_HERE";
+const COST_PER_CALL = 1.5;
+/* ============================================ */
+
+const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+let DATA = [], charts = {};
+
+const $ = id => document.getElementById(id);
+const fmt = n => n.toLocaleString("en-IN");
+const pct = (a,b) => b ? (a/b*100) : 0;
+
+function parseDay(d){
+  d = String(d||"").trim();
+  let m = d.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/); if(m) return +m[3];
+  m = d.match(/^(\d{1,2})[-\/ .]/); return m ? +m[1] : null;
+}
+
+function showMsg(t){ const m=$("msg"); m.textContent=t; m.style.display="block"; }
+
+function load(){
+  if(CSV_URL.startsWith("PASTE")){ showMsg("Add your published Google Sheet CSV link in index.html (CSV_URL)."); return; }
+  Papa.parse(CSV_URL, {download:true, header:true, skipEmptyLines:true,
+    complete: r => {
+      DATA = r.data.map(x => ({
+        year: String(x.Year||"").trim(),
+        month: String(x.Month||"").trim(),
+        day: parseDay(x.Date),
+        outlet: String(x.Outlet||"").trim(),
+        tag: String(x.Tag||"").trim(),
+        agent: String(x.CallBy||"").trim()
+      })).filter(x => x.tag !== "");
+      DATA.forEach(x => x.sat = x.tag.toLowerCase().startsWith("best"));
+      $("updated").textContent = "Loaded " + fmt(DATA.length) + " calls";
+      buildFilters(); render();
+    },
+    error: e => showMsg("Could not load data: " + e)
+  });
+}
+
+function fillSelect(id, values){
+  $(id).innerHTML = ["All", ...values].map(v => `<option value="${v}">${v}</option>`).join("");
+}
+function buildFilters(){
+  const uniq = k => [...new Set(DATA.map(x => x[k]).filter(v => v !== null && v !== ""))];
+  fillSelect("fYear", uniq("year").sort());
+  fillSelect("fMonth", uniq("month").sort((a,b)=>MONTHS.indexOf(a)-MONTHS.indexOf(b)));
+  fillSelect("fDay", uniq("day").sort((a,b)=>a-b));
+  fillSelect("fOutlet", uniq("outlet").sort());
+  ["fYear","fMonth","fDay","fOutlet"].forEach(id => $(id).onchange = render);
+  $("reset").onclick = () => { ["fYear","fMonth","fDay","fOutlet"].forEach(id => $(id).value="All"); render(); };
+}
+
+function filtered(){
+  const y=$("fYear").value, m=$("fMonth").value, d=$("fDay").value, o=$("fOutlet").value;
+  return DATA.filter(x =>
+    (y==="All"||x.year===y) && (m==="All"||x.month===m) &&
+    (d==="All"||String(x.day)===d) && (o==="All"||x.outlet===o));
+}
+
+function group(rows, keyFn){
+  const g = {};
+  rows.forEach(r => { const k = keyFn(r); (g[k] = g[k] || {total:0,sat:0}); g[k].total++; if(r.sat) g[k].sat++; });
+  return g;
+}
+
+function draw(id, cfg){
+  if(charts[id]) charts[id].destroy();
+  charts[id] = new Chart($(id), cfg);
+}
+
+function render(){
+  const rows = filtered();
+  const total = rows.length, sat = rows.filter(r=>r.sat).length, unsat = total - sat;
+
+  $("kTotal").textContent = fmt(total);
+  $("kSat").textContent = fmt(sat);
+  $("kUnsat").textContent = fmt(unsat);
+  $("kCsat").textContent = pct(sat,total).toFixed(2) + "%";
+  $("kComp").textContent = pct(unsat,total).toFixed(2) + "%";
+  $("kCost").textContent = "₹" + fmt(Math.round(total*COST_PER_CALL));
+
+  Chart.defaults.color = "#8b97b5";
+  Chart.defaults.borderColor = "#26304a";
+  const noLegend = {plugins:{legend:{display:false}}, maintainAspectRatio:false};
+
+  draw("chDonut", {type:"doughnut",
+    data:{labels:["Satisfied","Unsatisfied"], datasets:[{data:[sat,unsat], backgroundColor:["#2ecc8f","#ff6b6b"], borderWidth:0}]},
+    options:{maintainAspectRatio:false, cutout:"68%", plugins:{legend:{position:"bottom"}}}});
+
+  // Daily trend
+  const MI = m => MONTHS.indexOf(m);
+  const byDay = group(rows, r => `${r.year}|${String(MI(r.month)).padStart(2,"0")}|${String(r.day).padStart(2,"0")}`);
+  const dayKeys = Object.keys(byDay).sort();
+  const trendVals = dayKeys.map(k => +pct(byDay[k].sat, byDay[k].total).toFixed(2));
+  const trendMin = trendVals.length ? Math.max(0, Math.floor(Math.min(...trendVals)/5)*5 - 5) : 0;
+  draw("chTrend", {type:"line",
+    data:{labels:dayKeys.map(k => {const [y,m,d]=k.split("|"); return `${+d} ${MONTHS[+m].slice(0,3)}`;}),
+      datasets:[{data:trendVals, borderColor:"#5b8def", backgroundColor:"rgba(91,141,239,.15)", fill:true, tension:.3, pointRadius:2}]},
+    options:{...noLegend, scales:{y:{min:trendMin, max:100, ticks:{callback:v=>v+"%"}}}}});
+
+  // Outlet
+  const byOut = group(rows, r => r.outlet || "Unknown");
+  const outs = Object.entries(byOut).map(([k,v]) => ({k, p:pct(v.sat,v.total), n:v.total})).sort((a,b)=>a.p-b.p);
+  const outMin = outs.length ? Math.max(0, Math.floor(Math.min(...outs.map(o=>o.p))/5)*5 - 5) : 0;
+  draw("chOutlet", {type:"bar",
+    data:{labels:outs.map(o=>o.k), datasets:[{data:outs.map(o=>+o.p.toFixed(2)),
+      backgroundColor:outs.map(o => o.p>=95?"#2ecc8f":o.p>=90?"#f5b942":"#ff6b6b"), borderRadius:6}]},
+    options:{...noLegend, indexAxis:"y", scales:{x:{min:outMin,max:100,ticks:{callback:v=>v+"%"}}},
+      plugins:{legend:{display:false}, tooltip:{callbacks:{afterLabel:c=>fmt(outs[c.dataIndex].n)+" calls"}}}}});
+
+  // Tags
+  const tagCount = {};
+  rows.filter(r=>!r.sat).forEach(r => tagCount[r.tag] = (tagCount[r.tag]||0) + 1);
+  const tags = Object.entries(tagCount).sort((a,b)=>b[1]-a[1]).slice(0,10);
+  draw("chTags", {type:"bar",
+    data:{labels:tags.map(t=>t[0]), datasets:[{data:tags.map(t=>t[1]), backgroundColor:"#ff6b6b", borderRadius:6}]},
+    options:{...noLegend, indexAxis:"y"}});
+
+  // Agents
+  const byAgent = group(rows, r => r.agent || "Unknown");
+  $("agentBody").innerHTML = Object.entries(byAgent).sort((a,b)=>b[1].total-a[1].total).map(([k,v]) =>
+    `<tr><td>${k}</td><td>${fmt(v.total)}</td><td>${fmt(v.sat)}</td><td>${fmt(v.total-v.sat)}</td><td>${pct(v.sat,v.total).toFixed(2)}%</td></tr>`).join("");
+}
+
+load();
+</script>
+</body>
+</html>
